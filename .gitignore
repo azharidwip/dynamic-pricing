@@ -1,3 +1,7 @@
 # .gitignore
 .venv/
 .venv
+*data*
+*model*
+*venv*
+*cache*

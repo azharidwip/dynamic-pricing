@@ -8,111 +8,113 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score, mean_absolute_error, root_mean_squared_error, mean_squared_error
 from sklearn.ensemble import RandomForestRegressor
 import streamlit as st
-import psycopg2
-from sqlalchemy import create_engine, text, URL
-from urllib.parse import quote_plus
+# from sqlalchemy import create_engine
+# from urllib.parse import quote_plus
 import pickle 
 import os
 import sys
 import importlib
 
-def main():
-    st.set_page_config(
-        page_title="Dynamic Pricing Model",
-        page_icon="📊"
-        #layout="columns"
-    )
-    DB_URL = st.secrets["neon"]["url"]
-
-    engine = create_engine(DB_URL)
-
-    @st.cache_data
-    def load_data():
-        query = "SELECT * FROM public.datamart;" 
-        df = pd.read_sql(query, engine)
-        return df
+st.set_page_config(
+    page_title="Dynamic Pricing Model",
+    page_icon="📊")
     
-    df = load_data()
+    # DB_URL = st.secrets["neon"]["url"]
+    # engine = create_engine(DB_URL)
+
+    # @st.cache_data
+    # def load_data():
+    #     query = "SELECT * FROM public.datamart;" 
+    #     df = pd.read_sql(query, engine)
+    #     return df
+
+@st.cache_data
+def load_data():
+    with open("data/df.pkl","rb") as file:
+        df = pickle.load(file)
+    return df
+
+df = load_data()
     
-    @st.cache_data
-    def calculate_dynamic_pricing(df, group_cols):
-        # Pastikan tanggal sudah dalam format date
-        df['order_date'] = pd.to_datetime(df['order_purchase_timestamp']).dt.date
+@st.cache_data
+def calculate_dynamic_pricing(df, group_cols):
+    # Pastikan tanggal sudah dalam format date
+    df['order_date'] = pd.to_datetime(df['order_purchase_timestamp']).dt.date
 
-        # Grouping berdasarkan kolom yang ditentukan
-        grouped = df.groupby(group_cols).agg(
-            number_of_orders=('order_id', 'count'),
-            number_of_sellers=('seller_id', 'nunique'),
-            historical_cost=('price', 'mean')).dropna().reset_index()
+    # Grouping berdasarkan kolom yang ditentukan
+    grouped = df.groupby(group_cols).agg(
+        number_of_orders=('order_id', 'count'),
+        number_of_sellers=('seller_id', 'nunique'),
+        historical_cost=('price', 'mean')).dropna().reset_index()
 
-        # Percentile untuk multiplier
-        high_demand = np.percentile(grouped['number_of_orders'], 75)
-        low_demand = np.percentile(grouped['number_of_orders'], 25)
+    # Percentile untuk multiplier
+    high_demand = np.percentile(grouped['number_of_orders'], 75)
+    low_demand = np.percentile(grouped['number_of_orders'], 25)
 
-        high_supply = np.percentile(grouped['number_of_orders'], 75)
-        low_supply = np.percentile(grouped['number_of_orders'], 25)
+    high_supply = np.percentile(grouped['number_of_orders'], 75)
+    low_supply = np.percentile(grouped['number_of_orders'], 25)
 
-        # Demand multiplier
-        grouped['demand_multiplier'] = np.where(
-            grouped['number_of_orders'] > high_demand,
-            grouped['number_of_orders'] / high_demand,
-            grouped['number_of_orders'] / low_demand)
+    # Demand multiplier
+    grouped['demand_multiplier'] = np.where(
+        grouped['number_of_orders'] > high_demand,
+        grouped['number_of_orders'] / high_demand,
+        grouped['number_of_orders'] / low_demand)
 
-        # Supply multiplier
-        grouped['supply_multiplier'] = np.where(
-            grouped['number_of_sellers'] > low_supply,
-            high_supply / grouped['number_of_sellers'],
-            low_supply / grouped['number_of_sellers'])
+    # Supply multiplier
+    grouped['supply_multiplier'] = np.where(
+        grouped['number_of_sellers'] > low_supply,
+        high_supply / grouped['number_of_sellers'],
+        low_supply / grouped['number_of_sellers'])
 
-        # Threshold
-        demand_threshold_low = 0.1
-        supply_threshold_high = 0.1
+    # Threshold
+    demand_threshold_low = 0.1
+    supply_threshold_high = 0.1
 
-        # Adjusted price
-        cb_mlp = (
-            np.maximum(grouped['demand_multiplier'], demand_threshold_low) *
-            np.maximum(grouped['supply_multiplier'], supply_threshold_high))
-        # Batasi multiplier agar tidak lebih dari 1.3 (30% kenaikan maksimum)
-        max_increase = 1.05
-        final_multiplier = np.minimum(cb_mlp, max_increase)
+    # Adjusted price
+    cb_mlp = (
+        np.maximum(grouped['demand_multiplier'], demand_threshold_low) *
+        np.maximum(grouped['supply_multiplier'], supply_threshold_high))
+    # Batasi multiplier agar tidak lebih dari 1.3 (30% kenaikan maksimum)
+    max_increase = 1.05
+    final_multiplier = np.minimum(cb_mlp, max_increase)
 
-        # Hitung harga akhir dengan batas atas
-        grouped['adjusted_price'] = grouped['historical_cost'] * final_multiplier
+    # Hitung harga akhir dengan batas atas
+    grouped['adjusted_price'] = grouped['historical_cost'] * final_multiplier
 
-        return grouped
+    return grouped
 
     
-    def get_dynamic_pricing(df, group_cols):
-        return calculate_dynamic_pricing(df, group_cols)
+def get_dynamic_pricing(df, group_cols):
+    return calculate_dynamic_pricing(df, group_cols)
     
-    data = get_dynamic_pricing(df, ['product_id','product_category_name', 'customer_state'])
+data = get_dynamic_pricing(df, ['product_id','product_category_name', 'customer_state'])
 
-    le = LabelEncoder()
-    le.fit(data['product_id'])
+le = LabelEncoder()
+le.fit(data['product_id'])
 
-    org_label = le.classes_
-    enc_label = range(len(le.classes_))
-    product_id_map = dict(zip(org_label, enc_label))
+org_label = le.classes_
+enc_label = range(len(le.classes_))
+product_id_map = dict(zip(org_label, enc_label))
 
-    data['product_id_enc'] = data['product_id'].map(product_id_map)
+data['product_id_enc'] = data['product_id'].map(product_id_map)
 
-    product_category = data['product_category_name']
-    customer_st = data['customer_state']
+product_category = data['product_category_name']
+customer_st = data['customer_state']
 
-    unique_info = data.drop_duplicates(subset='product_id')[['product_id', 'product_category_name', 'customer_state']]
-    product_info = dict(zip(unique_info['product_id'], zip(unique_info['product_category_name'], unique_info['customer_state'])))
+unique_info = data.drop_duplicates(subset='product_id')[['product_id', 'product_category_name', 'customer_state']]
+product_info = dict(zip(unique_info['product_id'], zip(unique_info['product_category_name'], unique_info['customer_state'])))
 
-    df_pi = pd.DataFrame.from_dict(product_info, orient='index', columns = ['product_category_name','customer_state'])
-    df_pi.reset_index(inplace=True)
-    df_pi.rename(columns={'index':'product_id'}, inplace=True)
-
-
-    # import hasil product_id_map ke CSV
-    #df_map = pd.DataFrame(list(product_id_map.items()), columns=['product_id','product_id_encoding'])
+df_pi = pd.DataFrame.from_dict(product_info, orient='index', columns = ['product_category_name','customer_state'])
+df_pi.reset_index(inplace=True)
+df_pi.rename(columns={'index':'product_id'}, inplace=True)
 
 
-    #product_id_map
-    product_category_map = {
+# import hasil product_id_map ke CSV
+#df_map = pd.DataFrame(list(product_id_map.items()), columns=['product_id','product_id_encoding'])
+
+
+#product_id_map
+product_category_map = {
         'Agro_Industry_And_Commerce': 239.02153153153154,
         'Air_Conditioning': 193.12535031847133,
         'Art': 107.19664,
@@ -187,13 +189,13 @@ def main():
     }
 
     # product_id_map ke kolom baru
-    data["product_category_enc"] = data["product_category_name"].map(product_category_map)
+data["product_category_enc"] = data["product_category_name"].map(product_category_map)
 
     # Cek hasil
     #print(data[["product_category_name", "product_category_enc"]].head())
 
     #Converting time of booking to a numerical feature
-    state_map = {
+state_map = {
         "Andhra Pradesh": 0.685111306,
         "Gujarat": 0.130986103,
         "Chhattisgarh": 0.048393077,
@@ -216,38 +218,37 @@ def main():
     }
 
     # product_id_map ke dataframe
-    data["customer_state_enc"] = data["customer_state"].map(state_map)
+data["customer_state_enc"] = data["customer_state"].map(state_map)
 
-    # Cek hasil
-    #print(data[["customer_state", "customer_state_enc"]].head())
+# Cek hasil
+#print(data[["customer_state", "customer_state_enc"]].head())
     
-    @st.cache_resource
-    def train_model(data):
-        x = data[['product_id_enc', 'product_category_enc', 'customer_state_enc','historical_cost','number_of_orders']]
-        y = data['adjusted_price']
-        x_train, x_test, y_train, y_test = train_test_split(x,y, test_size = 0.2, random_state=42)
-        rf = RandomForestRegressor()
-        rf.fit(x_train, y_train)
-        return rf
+@st.cache_resource
+def load_model():
+    with open("models/randomforest.pkl",'rb') as file:
+        loaded = pickle.load(file)
+    return loaded
 
-    #Define function to get encoding result
+#Define function to get encoding result
 
-    def product_category_numeric(product_category_enc):
-        product_category_numeric_mapping = product_category_map
-        product_category_numeric = product_category_numeric_mapping.get(product_category_enc)
-        return product_category_numeric
+def product_category_numeric(product_category_enc):
+    product_category_numeric_mapping = product_category_map
+    product_category_numeric = product_category_numeric_mapping.get(product_category_enc)
+    return product_category_numeric
 
-    def state_numeric(customer_state_enc):
-        state_numeric_mapping = state_map
-        state_numeric = state_numeric_mapping.get(customer_state_enc)
-        return state_numeric
+def state_numeric(customer_state_enc):
+    state_numeric_mapping = state_map
+    state_numeric = state_numeric_mapping.get(customer_state_enc)
+    return state_numeric
 
-    def product_id_numeric(product_id_enc):
-        product_id_numeric_mapping = product_id_map
-        product_id_numeric = product_id_numeric_mapping.get(product_id_enc)
-        return product_id_numeric
+def product_id_numeric(product_id_enc):
+    product_id_numeric_mapping = product_id_map
+    product_id_numeric = product_id_numeric_mapping.get(product_id_enc)
+    return product_id_numeric
 
-    model = train_model(data)
+model = load_model()
+
+def main():
     #making predictions using user input values
     def predict_price(product_id_enc,product_category_enc,customer_state_enc,historical_cost,number_of_orders):
         product_id_numeric_result = product_id_numeric(product_id_enc)

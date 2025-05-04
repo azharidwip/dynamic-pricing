@@ -8,6 +8,9 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score, mean_absolute_error, root_mean_squared_error, mean_squared_error
 from sklearn.ensemble import RandomForestRegressor
 import streamlit as st
+import psycopg2
+from sqlalchemy import create_engine, text, URL
+from urllib.parse import quote_plus
 import pickle 
 import os
 import sys
@@ -19,10 +22,15 @@ def main():
         page_icon="📊"
         #layout="columns"
     )
+    DB_URL = st.secrets["neon"]["url"]
+
+    engine = create_engine(DB_URL)
 
     @st.cache_data
     def load_data():
-        return pd.read_csv("data/e-commerce_transaction.csv")
+        query = "SELECT * FROM public.datamart;" 
+        df = pd.read_sql(query, engine)
+        return df
     
     df = load_data()
     

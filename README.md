@@ -36,7 +36,7 @@ Proyek ini menerapkan model **penetapan harga dinamis (dynamic pricing)** menggu
 ├── venv/
 │   ├──Lib/site-packages/pip         
 │   ├──Scripts         
-│   └──- pyvenv.cfg           
+│   └── pyvenv.cfg           
 │
 ├── .gitignore
 |

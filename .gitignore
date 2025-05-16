@@ -6,3 +6,4 @@
 *venv*
 *cache*
 secrets.toml
+test.py

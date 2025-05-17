@@ -1,4 +1,3 @@
-
 # filename: streamtlit_app.py
 import pandas as pd
 import numpy as np
@@ -7,9 +6,8 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score, mean_absolute_error, root_mean_squared_error, mean_squared_error
 from sklearn.ensemble import RandomForestRegressor
+from sqlalchemy import create_engine
 import streamlit as st
-# from sqlalchemy import create_engine
-# from urllib.parse import quote_plus
 import pickle 
 import os
 import sys
@@ -19,71 +17,71 @@ st.set_page_config(
     page_title="Dynamic Pricing Model",
     page_icon="📊")
     
-    # DB_URL = st.secrets["neon"]["url"]
-    # engine = create_engine(DB_URL)
-
-    # @st.cache_data
-    # def load_data():
-    #     query = "SELECT * FROM public.datamart;" 
-    #     df = pd.read_sql(query, engine)
-    #     return df
+DB_URL = st.secrets["neon"]["url"]
+engine = create_engine(DB_URL)
 
 @st.cache_data
 def load_data():
-    with open("data/df.pkl","rb") as file:
-        df = pickle.load(file)
+    query = """
+    SELECT
+        order_purchase_timestamp,
+        product_id,
+        product_category_name,
+        customer_state,
+        order_id,
+        seller_id,
+        price
+    FROM public.datamart;
+    """
+    df = pd.read_sql(query, engine)
     return df
+
+# @st.cache_data
+# def load_data():
+#     with open("data/df.pkl","rb") as file:
+#         df = pickle.load(file)
+#     return df
 
 df = load_data()
     
 @st.cache_data
 def calculate_dynamic_pricing(df, group_cols):
-    # Pastikan tanggal sudah dalam format date
     df['order_date'] = pd.to_datetime(df['order_purchase_timestamp']).dt.date
 
-    # Grouping berdasarkan kolom yang ditentukan
     grouped = df.groupby(group_cols).agg(
         number_of_orders=('order_id', 'count'),
-        number_of_sellers=('seller_id', 'nunique'),
-        historical_cost=('price', 'mean')).dropna().reset_index()
+        number_of_sellers=('seller_id', "nunique"),
+        historical_cost=('price', "median")
+    ).dropna().reset_index()
 
-    # Percentile untuk multiplier
+    # Hitung percentile
     high_demand = np.percentile(grouped['number_of_orders'], 75)
     low_demand = np.percentile(grouped['number_of_orders'], 25)
+    high_supply = np.percentile(grouped['number_of_sellers'], 75)
+    low_supply = np.percentile(grouped['number_of_sellers'], 25)
 
-    high_supply = np.percentile(grouped['number_of_orders'], 75)
-    low_supply = np.percentile(grouped['number_of_orders'], 25)
-
-    # Demand multiplier
+    # Demand multiplier: lebih dari 1 jika demand tinggi
     grouped['demand_multiplier'] = np.where(
         grouped['number_of_orders'] > high_demand,
         grouped['number_of_orders'] / high_demand,
-        grouped['number_of_orders'] / low_demand)
+        grouped['number_of_orders'] / low_demand
+    )
+    grouped['demand_multiplier'] = grouped['demand_multiplier'].clip(lower=0.8, upper=1.2)
 
-    # Supply multiplier
+    # Supply multiplier: lebih dari 1 jika supply rendah
     grouped['supply_multiplier'] = np.where(
-        grouped['number_of_sellers'] > low_supply,
-        high_supply / grouped['number_of_sellers'],
-        low_supply / grouped['number_of_sellers'])
+        grouped['number_of_sellers'] > high_supply,
+        low_supply / grouped['number_of_sellers'],  # supply tinggi = multiplier kecil
+        high_supply / grouped['number_of_sellers']  # supply rendah = multiplier besar
+)
+    grouped['supply_multiplier'] = grouped['supply_multiplier'].clip(lower=0.8, upper=1.2)
 
-    # Threshold
-    demand_threshold_low = 0.1
-    supply_threshold_high = 0.1
-
-    # Adjusted price
-    cb_mlp = (
-        np.maximum(grouped['demand_multiplier'], demand_threshold_low) *
-        np.maximum(grouped['supply_multiplier'], supply_threshold_high))
-    # Batasi multiplier agar tidak lebih dari 1.3 (30% kenaikan maksimum)
-    max_increase = 1.05
-    final_multiplier = np.minimum(cb_mlp, max_increase)
-
-    # Hitung harga akhir dengan batas atas
-    grouped['adjusted_price'] = grouped['historical_cost'] * final_multiplier
-
+    # Harga dinamis
+    grouped['adjusted_price'] = grouped['historical_cost'] * (
+        grouped['demand_multiplier'] * grouped['supply_multiplier']
+    )  
     return grouped
 
-    
 def get_dynamic_pricing(df, group_cols):
     return calculate_dynamic_pricing(df, group_cols)
     
@@ -252,31 +250,40 @@ def main():
     #making predictions using user input values
     def predict_price(product_id_enc,product_category_enc,customer_state_enc,historical_cost,number_of_orders):
         product_id_numeric_result = product_id_numeric(product_id_enc)
-        if product_id_enc is None:
+        if product_id_numeric_result is None:
             raise ValueError("Invalid vehicle type")
 
         product_category_numeric_result = product_category_numeric(product_category_enc)
-        if product_category_enc is None:
+        if product_category_numeric_result is None:
             raise ValueError("Invalid time of booking")
 
         customer_state_numeric_result = state_numeric(customer_state_enc)
-        if customer_state_enc is None:
+        if customer_state_numeric_result is None:
             raise ValueError("Invalid time of booking")
 
-        input_data = pd.DataFrame([{
-            'product_id_enc': product_id_numeric_result,
-            'product_category_enc': product_category_numeric_result,
-            'customer_state_enc': customer_state_numeric_result,
-            'historical_cost': historical_cost,
-            'number_of_orders': number_of_orders}])
-        predicted_price = model.predict(input_data)
+        X_pred = pd.DataFrame([[
+            product_id_numeric_result,
+            product_category_numeric_result,
+            customer_state_numeric_result,
+            historical_cost,
+            number_of_orders
+            ]], columns=['product_id_enc', 'product_category_enc', 'customer_state_enc', 'historical_cost', 'number_of_orders'])
+
+    # Lakukan prediksi
+        predicted_price = model.predict(X_pred)[0]
         return predicted_price
 
     st.title("Dynamic Pricing Model")
 
+    if "final_data" not in st.session_state:
+        st.session_state.final_data = pd.DataFrame(columns=['product_id_enc','product_category_enc','customer_state_enc','historical_cost','number_of_orders'])
+
+    product_category_enc = st.selectbox("Category", options=list(product_category_map.keys()))
+    filtered_products = df_pi[df_pi['product_category_name']==product_category_enc]['product_id'].unique().tolist()
+
     with st.form("Input Your Information"):
-        product_id_enc  = st.selectbox("Product Id", options=list(product_id_map.keys()))
-        product_category_enc = st.selectbox("Category", options=list(product_category_map.keys()))
+
+        product_id_enc  = st.selectbox("Product Id", options=filtered_products, key='product_id')
         customer_state_enc = st.selectbox("State", options=list(state_map.keys()))
         historical_cost = st.number_input("Price", min_value=1)
         number_of_orders= st.number_input("Number of Orders", min_value=1)
@@ -285,8 +292,20 @@ def main():
     if submitted:
        predicted_price = predict_price(product_id_enc,product_category_enc,customer_state_enc,historical_cost,number_of_orders)
        price = predicted_price.item()  # atau predicted_price[0] jika pasti 1D
-       st.success(f"Predicted price for {product_id_enc} in {product_category_enc} for customer who live in {customer_state_enc} are: Rp {price:,.0f}")
 
+       data_submitted = pd.DataFrame({
+           'product_id_enc':[product_id_enc],
+           'product_category_enc':[product_category_enc],
+           'customer_state_enc':[customer_state_enc],
+           'historical_cost':[historical_cost],
+           'number_of_orders':[number_of_orders]})
+       
+       st.session_state.final_data = pd.concat([st.session_state.final_data, data_submitted], ignore_index=True)
+       st.success(f"Predicted price for {product_id_enc} in {product_category_enc} for customer who live in {customer_state_enc} are: Rp {price:,.0f}")
+    
+    st.subheader("Dynamic Pricing Data")
+    st.dataframe(st.session_state.final_data)
 
 if __name__ == "__main__":
     main()
+

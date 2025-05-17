@@ -1,4 +1,3 @@
-
 # filename: streamtlit_app.py
 import pandas as pd
 import numpy as np
@@ -7,6 +6,7 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score, mean_absolute_error, root_mean_squared_error, mean_squared_error
 from sklearn.ensemble import RandomForestRegressor
+from sqlalchemy import create_engine
 import streamlit as st
 import pickle 
 import os
@@ -17,20 +17,30 @@ st.set_page_config(
     page_title="Dynamic Pricing Model",
     page_icon="📊")
     
-    # DB_URL = st.secrets["neon"]["url"]
-    # engine = create_engine(DB_URL)
-
-    # @st.cache_data
-    # def load_data():
-    #     query = "SELECT * FROM public.datamart;" 
-    #     df = pd.read_sql(query, engine)
-    #     return df
+DB_URL = st.secrets["neon"]["url"]
+engine = create_engine(DB_URL)
 
 @st.cache_data
 def load_data():
-    with open("data/df.pkl","rb") as file:
-        df = pickle.load(file)
+    query = """
+    SELECT
+        order_purchase_timestamp,
+        product_id,
+        product_category_name,
+        customer_state,
+        order_id,
+        seller_id,
+        price
+    FROM public.datamart;
+    """
+    df = pd.read_sql(query, engine)
     return df
+
+# @st.cache_data
+# def load_data():
+#     with open("data/df.pkl","rb") as file:
+#         df = pickle.load(file)
+#     return df
 
 df = load_data()
     
@@ -40,8 +50,8 @@ def calculate_dynamic_pricing(df, group_cols):
 
     grouped = df.groupby(group_cols).agg(
         number_of_orders=('order_id', 'count'),
-        number_of_sellers=('seller_id', pd.Series.nunique),
-        historical_cost=('price', np.median)
+        number_of_sellers=('seller_id', "nunique"),
+        historical_cost=('price', "median")
     ).dropna().reset_index()
 
     # Hitung percentile
@@ -63,16 +73,15 @@ def calculate_dynamic_pricing(df, group_cols):
         grouped['number_of_sellers'] > high_supply,
         low_supply / grouped['number_of_sellers'],  # supply tinggi = multiplier kecil
         high_supply / grouped['number_of_sellers']  # supply rendah = multiplier besar
-    )
+)
     grouped['supply_multiplier'] = grouped['supply_multiplier'].clip(lower=0.8, upper=1.2)
 
     # Harga dinamis
     grouped['adjusted_price'] = grouped['historical_cost'] * (
         grouped['demand_multiplier'] * grouped['supply_multiplier']
-    )
-
+    )  
     return grouped
-   
+
 def get_dynamic_pricing(df, group_cols):
     return calculate_dynamic_pricing(df, group_cols)
     
@@ -299,3 +308,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
